@@ -130,6 +130,11 @@ def get_currents(shape):
         if g.shape != shape:
             raise RuntimeError(f"海流の格子の大きさが合いません: {g.shape}")
         out.append(np.nan_to_num(g))
+    # 地衡流は赤道付近で計算が成り立たず、値が暴れる。赤道±3°は0、速さは2.5m/sまでにする
+    lat05 = np.linspace(90, -90, shape[0])[:, None]
+    sp = np.hypot(out[0], out[1])
+    k = np.where(np.abs(lat05) < 3, 0, np.minimum(1, 2.5 / np.maximum(sp, 1e-6)))
+    out = [out[0] * k, out[1] * k]
     d.close()
     os.remove(path)
     return out, str(t)[:10]
@@ -339,7 +344,7 @@ def main():
         print(f"PM2.5: {cc} の予報を使います(ずれ {back} 時間)")
         with ThreadPoolExecutor(6) as ex:
             pm = list(ex.map(lambda h: decode(get_pm25(cc, h + back)), HOURS))
-        a = pm[8][::2, ::2] * 1e9
+        a = pm[8][::2, ::2]
         at = lambda la, lo: float(a[int(round((90 - la) / 0.5)), int(round(lo / 0.5)) % a.shape[1]])
         print(f"  確認(24時間後): 中央値 {np.median(a):.1f} / 99% {np.percentile(a, 99):.1f} µg/m³ / "
               f"北京 {at(39.9, 116.4):.1f} / 東京 {at(35.7, 139.7):.1f} / デリー {at(28.6, 77.2):.1f}")
@@ -400,7 +405,7 @@ def main():
             save(f"vis_{h:03d}.dz", [grids["vis"][k]], 0.1)                       # 10m単位
         if pm is not None:
             a = pm[k][::2, ::2] if pm[k].shape[0] > shape[0] else pm[k]       # 0.25° → 0.5°
-            save(f"pm25_{h:03d}.dz", [np.clip(a * 1e9, 0, 3000)], 10)          # kg/m³ → µg/m³
+            save(f"pm25_{h:03d}.dz", [np.clip(a, 0, 3000)], 10)                # 値はすでに µg/m³
         if have_wave:
             w = wave_raw[k]
             hs = decode_wave(w["hs"], shape)
