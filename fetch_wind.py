@@ -339,6 +339,10 @@ def main():
         print(f"PM2.5: {cc} の予報を使います(ずれ {back} 時間)")
         with ThreadPoolExecutor(6) as ex:
             pm = list(ex.map(lambda h: decode(get_pm25(cc, h + back)), HOURS))
+        a = pm[8][::2, ::2] * 1e9
+        at = lambda la, lo: float(a[int(round((90 - la) / 0.5)), int(round(lo / 0.5)) % a.shape[1]])
+        print(f"  確認(24時間後): 中央値 {np.median(a):.1f} / 99% {np.percentile(a, 99):.1f} µg/m³ / "
+              f"北京 {at(39.9, 116.4):.1f} / 東京 {at(35.7, 139.7):.1f} / デリー {at(28.6, 77.2):.1f}")
     except Exception as e:
         pm = None
         print("警告: PM2.5 が取得できませんでした(そのレイヤーは使えません):", e)
@@ -360,6 +364,10 @@ def main():
         cur, cur_date = get_currents(shape)
         save("cur_000.dz", cur, 100)
         print("海流:", cur_date)
+        at = lambda a, la, lo: float(a[int(round((90 - la) / 0.5)), int(round(lo / 0.5)) % shape[1]])
+        sp = np.hypot(cur[0], cur[1])
+        print(f"  確認: 最大 {sp.max():.2f} m/s / 黒潮(33.5N,137E) u={at(cur[0], 33.5, 137):.2f} v={at(cur[1], 33.5, 137):.2f}"
+              f" / 湾流(38N,65W) u={at(cur[0], 38, 295):.2f} / 陸(36N,100E) {at(cur[0], 36, 100):.2f}")
     except Exception as e:
         print("警告: 海流が取得できませんでした(海流レイヤーは使えません):", e)
 
