@@ -65,6 +65,76 @@ def wave_url(cycle, h):
     return f"{BASE}/gfs.{ymd}/{hh}/wave/gridded/gfswave.t{hh}z.global.0p25.f{h:03d}.grib2"
 
 
+# ---------- PM2.5(NOAA GEFS-Aerosols。0.25°を0.5°に間引く) ----------
+CHEM = "https://noaa-gefs-pds.s3.amazonaws.com"
+
+
+def chem_url(cycle, h):
+    ymd, hh = cycle.strftime("%Y%m%d"), cycle.strftime("%H")
+    return f"{CHEM}/gefs.{ymd}/{hh}/chem/pgrb2ap25/gefs.chem.t{hh}z.a2d_0p25.f{h:03d}.grib2"
+
+
+def pick_chem(cycle):
+    """風と同じ時刻に合わせられる、いちばん新しいエアロゾル予報の回(と時間のずれ)を探す"""
+    for back in (0, 6, 12, 18):
+        c = cycle - timedelta(hours=back)
+        try:
+            fetch(chem_url(c, HOURS[-1] + back) + ".idx")
+            return c, back
+        except Exception:
+            pass
+    return None, 0
+
+
+def get_pm25(c, h):
+    url = chem_url(c, h)
+    lines = [l for l in fetch(url + ".idx").decode().splitlines() if l.strip()]
+    starts = [int(l.split(":")[1]) for l in lines]
+    for i, line in enumerate(lines):
+        p = line.split(":")
+        if len(p) > 6 and p[3] == "PMTF" and p[4] == "surface" and "Total aerosol" in p[6]:
+            end = starts[i + 1] - 1 if i + 1 < len(lines) else ""
+            return fetch(url, {"Range": f"bytes={starts[i]}-{end}"})
+    raise RuntimeError(f"PM2.5 f{h:03d}: 見つかりません")
+
+
+# ---------- 海流(NOAA CoastWatch: 衛星の海面高度から求めた地衡流。1日1回・0.25°) ----------
+CUR_URL = ("https://coastwatch.noaa.gov/erddap/griddap/noaacwBLENDEDNRTcurrentsDaily.nc"
+           "?u_current%5B(last)%5D%5B(-89.875):1:(89.875)%5D%5B(-179.875):1:(179.875)%5D"
+           ",v_current%5B(last)%5D%5B(-89.875):1:(89.875)%5D%5B(-179.875):1:(179.875)%5D")
+
+
+def get_currents(shape):
+    """0.25°の格子(格子点は .125/.375…)を、2×2の平均で、風と同じ0.5°の格子(上が北、経度0〜360)にする"""
+    import netCDF4
+    path = os.path.join(NEW, "_cur.nc")
+    with open(path, "wb") as f:
+        f.write(fetch(CUR_URL))
+    d = netCDF4.Dataset(path)
+    lat = np.asarray(d["latitude"][:])
+    t = netCDF4.num2date(d["time"][:], d["time"].units)[-1]
+    out = []
+    for name in ("u_current", "v_current"):
+        a = np.ma.filled(d[name][-1].astype(np.float32), np.nan)      # (lat 720, lon 1440)
+        if lat[0] < lat[-1]:
+            a = a[::-1]                                                  # 上が北
+        a = np.roll(a, 720, axis=1)                                      # 経度 -180〜 → 0〜
+        # 目的の格子点(緯度 90,89.5,…/ 経度 0,0.5,…)を囲む4点の平均。端は1行ずつ足して作る
+        p = np.full((722, 1441), np.nan, np.float32)
+        p[1:721, :1440] = a
+        p[:, 1440] = p[:, 0]
+        q = np.stack([p[0:721, 0:1440], p[1:722, 0:1440], p[0:721, 1:1441], p[1:722, 1:1441]])
+        with np.errstate(invalid="ignore"):
+            m = np.nanmean(q, axis=0)                                    # (721, 1440): 緯度90→-90 の0.25°ごと
+        g = m[::2, ::2]                                                  # 0.5°ごと
+        if g.shape != shape:
+            raise RuntimeError(f"海流の格子の大きさが合いません: {g.shape}")
+        out.append(np.nan_to_num(g))
+    d.close()
+    os.remove(path)
+    return out, str(t)[:10]
+
+
 def pick_cycle():
     """最後の時刻(72時間先)まで公開済みの、最新のサイクルを探す"""
     now = datetime.now(timezone.utc) - timedelta(hours=4)
@@ -205,6 +275,8 @@ STEP = {
     "vis": 10,     # 100 m
     "waveh": 10,   # 0.1 m
     "wavev": 10,   # 見た目用の速さ 0.1
+    "pm25": 10,    # 1 µg/m³
+    "cur": 1,      # 0.01 m/s(海流は遅いので細かく)
 }
 
 
@@ -259,6 +331,18 @@ def main():
     except Exception as e:
         print("警告: 波のデータが取得できませんでした(波レイヤーは使えません):", e)
 
+    pm = None
+    try:
+        cc, back = pick_chem(cycle)
+        if cc is None:
+            raise RuntimeError("エアロゾル予報の回が見つかりません")
+        print(f"PM2.5: {cc} の予報を使います(ずれ {back} 時間)")
+        with ThreadPoolExecutor(6) as ex:
+            pm = list(ex.map(lambda h: decode(get_pm25(cc, h + back)), HOURS))
+    except Exception as e:
+        pm = None
+        print("警告: PM2.5 が取得できませんでした(そのレイヤーは使えません):", e)
+
     grids = {name: [decode(d[name]) if d[name] is not None else None for d in raw]
              for name in SPEC}
     shape = grids["u"][0].shape
@@ -270,6 +354,14 @@ def main():
             grids[name] = fill_gaps(grids[name])
         else:
             print(f"警告: {name} が取得できませんでした(そのレイヤーは使えません)")
+
+    cur, cur_date = None, None
+    try:
+        cur, cur_date = get_currents(shape)
+        save("cur_000.dz", cur, 100)
+        print("海流:", cur_date)
+    except Exception as e:
+        print("警告: 海流が取得できませんでした(海流レイヤーは使えません):", e)
 
     have_wave = False
     if wave_raw:
@@ -298,6 +390,9 @@ def main():
             save(f"cape_{h:03d}.dz", [np.clip(grids["cape"][k], 0, 8000)], 1)     # J/kg
         if have["vis"]:
             save(f"vis_{h:03d}.dz", [grids["vis"][k]], 0.1)                       # 10m単位
+        if pm is not None:
+            a = pm[k][::2, ::2] if pm[k].shape[0] > shape[0] else pm[k]       # 0.25° → 0.5°
+            save(f"pm25_{h:03d}.dz", [np.clip(a * 1e9, 0, 3000)], 10)          # kg/m³ → µg/m³
         if have_wave:
             w = wave_raw[k]
             hs = decode_wave(w["hs"], shape)
@@ -335,6 +430,8 @@ def main():
         fields.append("vis")
     if have_wave:
         fields.append("waveh")
+    if pm is not None:
+        fields.append("pm25")
 
     manifest = {
         "v": 5,
@@ -346,6 +443,8 @@ def main():
         "h": int(shape[0]),
         "fields": fields,
     }
+    if cur is not None:
+        manifest["cur"] = cur_date
     with open(os.path.join(NEW, "manifest.json"), "w") as f:
         json.dump(manifest, f)
 
