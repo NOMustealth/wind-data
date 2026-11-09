@@ -86,16 +86,31 @@ def pick_chem(cycle):
     return None, 0
 
 
-def get_pm25(c, h):
+# エアロゾル予報の中から使うもの: (キー, 変数名, 高さ, 種類, 波長550nmに限るか)
+CHEM_SPEC = [
+    ("pm25", "PMTF", "surface", "Total aerosol", False),                       # 地表の PM2.5(µg/m³)
+    ("dust", "AOTK", "entire atmosphere", "Dust dry", True),                   # 黄砂・砂ぼこりの光学的厚さ
+    ("bc", "AOTK", "entire atmosphere", "Black carbon dry", True),             # すす
+    ("om", "AOTK", "entire atmosphere", "Particulate organic matter dry", True),   # 有機物(煙)
+]
+
+
+def get_chem(c, h):
     url = chem_url(c, h)
     lines = [l for l in fetch(url + ".idx").decode().splitlines() if l.strip()]
     starts = [int(l.split(":")[1]) for l in lines]
-    for i, line in enumerate(lines):
-        p = line.split(":")
-        if len(p) > 6 and p[3] == "PMTF" and p[4] == "surface" and "Total aerosol" in p[6]:
-            end = starts[i + 1] - 1 if i + 1 < len(lines) else ""
-            return fetch(url, {"Range": f"bytes={starts[i]}-{end}"})
-    raise RuntimeError(f"PM2.5 f{h:03d}: 見つかりません")
+    out = {}
+    for key, var, level, kind, w550 in CHEM_SPEC:
+        for i, line in enumerate(lines):
+            p = line.split(":")
+            if (len(p) > 6 and p[3] == var and p[4] == level and f"aerosol={kind}" in p[6]
+                    and (not w550 or (len(p) > 8 and "5.45e-07" in p[8]))):
+                end = starts[i + 1] - 1 if i + 1 < len(lines) else ""
+                out[key] = decode(fetch(url, {"Range": f"bytes={starts[i]}-{end}"}))
+                break
+    if "pm25" not in out:
+        raise RuntimeError(f"PM2.5 f{h:03d}: 見つかりません")
+    return out
 
 
 # ---------- 海流(NOAA CoastWatch: 衛星の海面高度から求めた地衡流。1日1回・0.25°) ----------
@@ -281,6 +296,8 @@ STEP = {
     "waveh": 10,   # 0.1 m
     "wavev": 10,   # 見た目用の速さ 0.1
     "pm25": 10,    # 1 µg/m³
+    "dust": 10,    # 光学的厚さ 0.01
+    "smoke": 10,   # 光学的厚さ 0.01
     "cur": 1,      # 0.01 m/s(海流は遅いので細かく)
 }
 
@@ -343,11 +360,14 @@ def main():
             raise RuntimeError("エアロゾル予報の回が見つかりません")
         print(f"PM2.5: {cc} の予報を使います(ずれ {back} 時間)")
         with ThreadPoolExecutor(6) as ex:
-            pm = list(ex.map(lambda h: decode(get_pm25(cc, h + back)), HOURS))
-        a = pm[8][::2, ::2]
+            pm = list(ex.map(lambda h: get_chem(cc, h + back), HOURS))
+        a = pm[8]["pm25"][::2, ::2]
         at = lambda la, lo: float(a[int(round((90 - la) / 0.5)), int(round(lo / 0.5)) % a.shape[1]])
         print(f"  確認(24時間後): 中央値 {np.median(a):.1f} / 99% {np.percentile(a, 99):.1f} µg/m³ / "
               f"北京 {at(39.9, 116.4):.1f} / 東京 {at(35.7, 139.7):.1f} / デリー {at(28.6, 77.2):.1f}")
+        for key in ("dust", "bc", "om"):
+            if key in pm[8]:
+                print(f"  確認 {key}: 最大 {pm[8][key].max():.2f} / 99% {np.percentile(pm[8][key], 99):.2f}")
     except Exception as e:
         pm = None
         print("警告: PM2.5 が取得できませんでした(そのレイヤーは使えません):", e)
@@ -404,8 +424,13 @@ def main():
         if have["vis"]:
             save(f"vis_{h:03d}.dz", [grids["vis"][k]], 0.1)                       # 10m単位
         if pm is not None:
-            a = pm[k][::2, ::2] if pm[k].shape[0] > shape[0] else pm[k]       # 0.25° → 0.5°
-            save(f"pm25_{h:03d}.dz", [np.clip(a, 0, 3000)], 10)                # 値はすでに µg/m³
+            half = lambda a: a[::2, ::2] if a.shape[0] > shape[0] else a        # 0.25° → 0.5°
+            c = pm[k]
+            save(f"pm25_{h:03d}.dz", [np.clip(half(c["pm25"]), 0, 3000)], 10)   # 値はすでに µg/m³
+            if "dust" in c:
+                save(f"dust_{h:03d}.dz", [np.clip(half(c["dust"]), 0, 30)], 1000)
+            if "bc" in c and "om" in c:
+                save(f"smoke_{h:03d}.dz", [np.clip(half(c["bc"] + c["om"]), 0, 30)], 1000)
         if have_wave:
             w = wave_raw[k]
             hs = decode_wave(w["hs"], shape)
@@ -445,6 +470,10 @@ def main():
         fields.append("waveh")
     if pm is not None:
         fields.append("pm25")
+        if all("dust" in c for c in pm):
+            fields.append("dust")
+        if all("bc" in c and "om" in c for c in pm):
+            fields.append("smoke")
 
     manifest = {
         "v": 5,
