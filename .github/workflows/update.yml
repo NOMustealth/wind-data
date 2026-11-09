@@ -1,0 +1,62 @@
+# GFSの予報データを取得して、GitHub Pagesに最新分だけを公開する
+# データはコミットしない(リポジトリが太らないように)
+name: update-data
+
+on:
+  schedule:
+    # GFSは6時間ごと(UTC 0/6/12/18時)。公開まで4時間ほどかかるので、その後に取りに行く
+    - cron: "23 4,10,16,22 * * *"
+  workflow_dispatch:      # Actions画面から手動でも実行できる
+
+permissions:
+  contents: write         # 下の keepalive 用
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: 予報データを取得
+        run: python fetch_wind.py
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: data
+
+      # 公開リポジトリの定期実行は、60日間コミットがないと止められてしまう。
+      # 最後のコミットから50日たったら空のコミットを1つ足して止まらないようにする
+      - name: keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( $(date +%s) - last )) -gt $(( 50 * 86400 )) ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive"
+            git push
+          fi
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
