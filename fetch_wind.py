@@ -33,9 +33,11 @@ SPEC = {
     "cloud": ("TCDC", "entire atmosphere", True),
     "cape": ("CAPE", "surface", False),
     "vis": ("VIS", "surface", False),
+    "ju": ("UGRD", "250 mb", False),        # 上空の風(250hPa、高さ約1万m。ジェット気流)
+    "jv": ("VGRD", "250 mb", False),
 }
 REQUIRED = {"u", "v", "t"}
-OPTIONAL = ["rh", "pres", "prate", "csnow", "cloud", "cape", "vis"]
+OPTIONAL = ["rh", "pres", "prate", "csnow", "cloud", "cape", "vis", "ju", "jv"]
 
 
 def fetch(url, headers=None, retries=3):
@@ -294,6 +296,7 @@ STEP = {
     "cape": 10,    # 10 J/kg
     "vis": 10,     # 100 m
     "waveh": 10,   # 0.1 m
+    "jet": 10,     # 0.1 m/s
     "wavev": 10,   # 見た目用の速さ 0.1
     "pm25": 10,    # 1 µg/m³
     "dust": 10,    # 光学的厚さ 0.01
@@ -407,6 +410,8 @@ def main():
     for k, h in enumerate(HOURS):
         u, v = grids["u"][k], grids["v"][k]
         save(f"wind_{h:03d}.dz", [u, v], 100)                                   # m/s
+        if have["ju"] and have["jv"]:
+            save(f"jet_{h:03d}.dz", [grids["ju"][k], grids["jv"][k]], 100)        # 上空の風 m/s
         save(f"temp_{h:03d}.dz", [grids["t"][k] - 273.15], 100)                 # ℃
         if have["rh"]:
             save(f"rh_{h:03d}.dz", [np.clip(grids["rh"][k], 0, 100)], 100)      # %
@@ -452,6 +457,8 @@ def main():
         print(f"f{h:03d} 保存")
 
     fields = ["wind", "temp"]
+    if have["ju"] and have["jv"]:
+        fields.append("jet")
     if have["rh"]:
         fields.append("rh")
     if have["pres"]:
