@@ -1,0 +1,24 @@
+name: charts
+# 気象庁の天気図(前線・等圧線・高低気圧)を1時間ごとに JSON にして、charts ブランチに置く
+# アプリは https://raw.githubusercontent.com/NOMustealth/wind-data/charts/charts.json を読む
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: { group: charts, cancel-in-progress: false }
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 charts.py /tmp/charts.json
+      - run: |
+          cd /tmp && rm -rf out && mkdir out && cd out
+          git init -q -b charts
+          cp /tmp/charts.json .
+          git add charts.json
+          git -c user.name="github-actions" -c user.email="actions@github.com" commit -qm "天気図 $(date -u +%FT%TZ)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" charts
