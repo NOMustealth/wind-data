@@ -338,6 +338,109 @@ def fill_gaps(seq):
     return seq
 
 
+# ---------- 統計(アプリの「世界」タブ用): 地球の極値と、地球の長い変化 ----------
+def top_points(a, n, big=True, sep=12.0):
+    """格子 a の大きい(小さい)順に、互いに sep 度以上はなれた n 点"""
+    flat = np.argsort(a, axis=None)
+    if big:
+        flat = flat[::-1]
+    out = []
+    H, W = a.shape
+    for idx in flat[:20000]:
+        y, x = divmod(int(idx), W)
+        lat, lon = 90 - y * 0.5, x * 0.5
+        lon = lon - 360 if lon > 180 else lon
+        if any(abs(lat - o[0]) < sep and min(abs(lon - o[1]), 360 - abs(lon - o[1])) < sep for o in out):
+            continue
+        out.append((lat, lon, round(float(a[y, x]), 1)))
+        if len(out) >= n:
+            break
+    return [{"lat": la, "lon": lo, "v": v} for la, lo, v in out]
+
+
+def fetch_text(url):
+    return fetch(url).decode("utf-8", "replace")
+
+
+def climate_stats():
+    st = {}
+    try:   # 二酸化炭素(ハワイ・マウナロア。週平均)
+        rows = [l.split() for l in fetch_text("https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_weekly_mlo.txt").splitlines()
+                if l.strip() and not l.startswith("#")]
+        rows = [r for r in rows if float(r[4]) > 0]
+        r = rows[-1]
+        st["co2"] = {"date": f"{r[0]}-{int(r[1]):02d}-{int(r[2]):02d}", "ppm": float(r[4]),
+                     "y1": float(r[6]) if float(r[6]) > 0 else None, "y10": float(r[7]) if float(r[7]) > 0 else None,
+                     "first": {"date": f"{rows[0][0]}-{int(rows[0][1]):02d}", "ppm": float(rows[0][4])}}
+    except Exception as e:
+        print("警告: CO2:", e)
+    try:   # 世界の平均気温(ERA5。Copernicus Climate Pulse)
+        lines = fetch_text("https://sites.ecmwf.int/data/climatepulse/data/series/era5_daily_series_2t_global.csv").splitlines()
+        rows = []
+        for l in lines:
+            c = l.split(",")
+            try:
+                rows.append((c[0], float(c[1]), float(c[3])))
+            except Exception:
+                pass                                   # 説明の行・見出し
+        d, t, an = rows[-1]
+        md = d[5:]
+        same = sorted([(r[1], r[0][:4]) for r in rows if r[0][5:] == md], reverse=True)
+        rank = [y for _, y in same].index(d[:4]) + 1
+        yearly = {}
+        for r in rows:
+            yearly.setdefault(r[0][:4], []).append(r[2])
+        ya = {y: round(sum(v) / len(v), 2) for y, v in yearly.items() if len(v) >= 360}
+        st["t2m"] = {"date": d, "t": round(t, 2), "ano": round(an, 2), "rank": rank, "years": len(same),
+                     "last30": [round(r[2], 2) for r in rows[-30:]],
+                     "yearAno": [[int(y), v] for y, v in sorted(ya.items())][-50:]}
+    except Exception as e:
+        print("警告: 世界の平均気温:", e)
+    try:   # 北極の海氷の広さ(NSIDC)
+        rows = []
+        for l in fetch_text("https://noaadata.apps.nsidc.org/NOAA/G02135/north/daily/data/N_seaice_extent_daily_v4.0.csv").splitlines()[2:]:
+            c = [x.strip() for x in l.split(",")[:4]]
+            try:
+                rows.append((int(c[0]), int(c[1]), int(c[2]), float(c[3])))
+            except Exception:
+                pass
+        y, m, dd, ext = rows[-1]
+        same = sorted([(r[3], r[0]) for r in rows if r[1] == m and r[2] == dd])
+        rank = [yy for _, yy in same].index(y) + 1            # 小さいほうから何番目
+        base = [r[3] for r in rows if r[1] == m and r[2] == dd and 1981 <= r[0] <= 2010]
+        st["ice"] = {"date": f"{y}-{m:02d}-{dd:02d}", "ext": ext, "rank": rank, "years": len(same),
+                     "clim": round(sum(base) / len(base), 3) if base else None,
+                     "min": {"y": same[0][1], "ext": same[0][0]}}
+    except Exception as e:
+        print("警告: 海氷:", e)
+    return st
+
+
+def write_stats(grids, have, pm, cycle):
+    st = {"cycle": cycle.isoformat()}
+    try:
+        t = grids["t"][0] - 273.15
+        w = np.hypot(grids["u"][0], grids["v"][0])
+        st["hot"] = top_points(t, 5, True)
+        st["cold"] = top_points(t, 5, False)
+        st["wind"] = top_points(w, 5, True)
+        if have.get("prate"):
+            st["rain"] = top_points(grids["prate"][1] * 3600, 5, True)
+        lat = np.deg2rad(90 - np.arange(t.shape[0]) * 0.5)
+        wt = np.cos(lat)[:, None] * np.ones_like(t)
+        st["meanT"] = round(float((t * wt).sum() / wt.sum()), 2)
+        if pm is not None:
+            a = pm[0]["pm25"]
+            a = a[::2, ::2] if a.shape[0] > t.shape[0] else a
+            st["pm25"] = top_points(a, 5, True)
+    except Exception as e:
+        print("警告: 極値:", e)
+    st.update(climate_stats())
+    with open(os.path.join(NEW, "stats.json"), "w") as f:
+        json.dump(st, f, ensure_ascii=False)
+    print("統計:", {k: (v if not isinstance(v, (list, dict)) else "…") for k, v in st.items()})
+
+
 def main():
     cycle = pick_cycle()
     print("使用するサイクル(UTC):", cycle)
@@ -481,6 +584,8 @@ def main():
             fields.append("dust")
         if all("bc" in c and "om" in c for c in pm):
             fields.append("smoke")
+
+    write_stats(grids, have, pm, cycle)
 
     manifest = {
         "v": 5,
