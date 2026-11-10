@@ -358,8 +358,11 @@ def top_points(a, n, big=True, sep=12.0):
     return [{"lat": la, "lon": lo, "v": v} for la, lo, v in out]
 
 
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
+
+
 def fetch_text(url):
-    return fetch(url).decode("utf-8", "replace")
+    return fetch(url, UA).decode("utf-8", "replace")
 
 
 def volcano_stats():
@@ -548,7 +551,16 @@ def main():
         print(f"  確認: 最大 {sp.max():.2f} m/s / 黒潮(33.5N,137E) u={at(cur[0], 33.5, 137):.2f} v={at(cur[1], 33.5, 137):.2f}"
               f" / 湾流(38N,65W) u={at(cur[0], 38, 295):.2f} / 陸(36N,100E) {at(cur[0], 36, 100):.2f}")
     except Exception as e:
-        print("警告: 海流が取得できませんでした(海流レイヤーは使えません):", e)
+        print("警告: 海流が取得できませんでした:", e)
+        try:   # 前回の公開データ(GitHub Pages)を使い回す
+            old = json.loads(fetch("https://nomustealth.github.io/wind-data/manifest.json"))
+            if old.get("cur"):
+                with open(os.path.join(NEW, "cur_000.dz"), "wb") as f:
+                    f.write(fetch("https://nomustealth.github.io/wind-data/cur_000.dz"))
+                cur, cur_date = True, old["cur"]
+                print("  前回の海流を使います:", cur_date)
+        except Exception as e2:
+            print("  前回の海流も取れませんでした(海流レイヤーは使えません):", e2)
 
     have_wave = False
     if wave_raw:
