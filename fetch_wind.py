@@ -460,6 +460,12 @@ def climate_stats():
                      "min": {"y": same[0][1], "ext": same[0][0]}}
     except Exception as e:
         print("警告: 海氷:", e)
+    try:   # エルニーニョ・ラニーニャ(米国 CPC の ONI。3か月平均のエルニーニョ監視海域の海面水温の平年差)
+        rows = [l.split() for l in fetch_text("https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt").splitlines()[1:] if l.strip()]
+        rows = [(r[0], int(r[1]), float(r[3])) for r in rows if len(r) >= 4]
+        st["oni"] = {"last": [{"s": r[0], "y": r[1], "a": r[2]} for r in rows[-12:]]}
+    except Exception as e:
+        print("警告: ONI:", e)
     try:
         st["volc"] = volcano_stats()
     except Exception as e:
