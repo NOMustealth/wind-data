@@ -362,6 +362,50 @@ def fetch_text(url):
     return fetch(url).decode("utf-8", "replace")
 
 
+def volcano_stats():
+    """世界の火山(スミソニアン博物館 GVP): いま噴火中・1960年以降の噴火回数ランキング・今週の活動"""
+    W = ("https://webservices.volcano.si.edu/geoserver/GVP-VOTW/ows?service=WFS&version=1.0.0&request=GetFeature"
+         "&outputFormat=application%2Fjson&propertyName=VolcanoNumber,VolcanoName,Country,VolcanoType,Elevation{extra}&typeName=GVP-VOTW:")
+    hol = json.loads(fetch(W.format(extra="") + "E3WebApp_HoloceneVolcanoes"))
+    info = {}
+    for f in hol["features"]:
+        p = f["properties"]
+        info[p["VolcanoNumber"]] = {"c": p.get("Country") or "", "ty": p.get("VolcanoType") or "", "el": p.get("Elevation")}
+    er = json.loads(fetch(W.replace("propertyName=VolcanoNumber,VolcanoName,Country,VolcanoType,Elevation{extra}",
+        "propertyName=VolcanoNumber,VolcanoName,ExplosivityIndexMax,StartDateYear,StartDate,ContinuingEruption,LatitudeDecimal,LongitudeDecimal")
+        + "E3WebApp_Eruptions1960"))
+    by = {}
+    erupting = []
+    for f in er["features"]:
+        p = f["properties"]
+        n = p["VolcanoNumber"]
+        b = by.setdefault(n, {"n": p["VolcanoName"], "k": 0, "vei": -1, "last": 0, "lat": p["LatitudeDecimal"], "lon": p["LongitudeDecimal"]})
+        b["k"] += 1
+        if p.get("ExplosivityIndexMax") is not None:
+            b["vei"] = max(b["vei"], p["ExplosivityIndexMax"])
+        b["last"] = max(b["last"], p.get("StartDateYear") or 0)
+        if str(p.get("ContinuingEruption")).lower() == "true":
+            erupting.append({"n": p["VolcanoName"], "since": str(p.get("StartDate") or ""), "lat": p["LatitudeDecimal"], "lon": p["LongitudeDecimal"],
+                             "c": info.get(n, {}).get("c", ""), "ty": info.get(n, {}).get("ty", ""), "el": info.get(n, {}).get("el")})
+    rank = sorted(by.items(), key=lambda kv: -kv[1]["k"])[:20]
+    out = {"erupting": sorted(erupting, key=lambda e: e["since"]),
+           "rank": [dict(v, c=info.get(k, {}).get("c", ""), ty=info.get(k, {}).get("ty", "")) for k, v in rank],
+           "n1960": len(er["features"]), "nvol": len(by), "nhol": len(info)}
+    try:
+        rss = fetch_text("https://volcano.si.edu/news/WeeklyVolcanoRSS.xml")
+        items = re.findall(r"<title>(.*?)</title>", rss)[1:]
+        wk = []
+        for t in items:
+            m = re.match(r"(.+?) \((.+?)\) - Report for (.+?) - (.+)", t)
+            if m:
+                wk.append({"n": m.group(1), "c": m.group(2), "new": "New" in m.group(4)})
+        out["weekly"] = wk
+        m = re.search(r"Report for (.+?) -", items[0]) if items else None
+        out["week"] = m.group(1) if m else ""
+    except Exception as e:
+        print("警告: 火山の週報:", e)
+    return out
+
 def climate_stats():
     st = {}
     try:   # 二酸化炭素(ハワイ・マウナロア。週平均)
@@ -413,6 +457,10 @@ def climate_stats():
                      "min": {"y": same[0][1], "ext": same[0][0]}}
     except Exception as e:
         print("警告: 海氷:", e)
+    try:
+        st["volc"] = volcano_stats()
+    except Exception as e:
+        print("警告: 火山:", e)
     return st
 
 
