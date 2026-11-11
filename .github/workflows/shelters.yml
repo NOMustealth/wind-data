@@ -1,0 +1,22 @@
+name: shelters
+# 全国の指定緊急避難場所(国土地理院)を、都道府県ごとに数える(週1回)。shelters ブランチに置く
+on:
+  schedule:
+    - cron: "17 19 * * 0"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  shelters:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 shelters.py /tmp/shelters.json
+      - run: |
+          cd /tmp && rm -rf out && mkdir out && cd out
+          git init -q -b shelters
+          cp /tmp/shelters.json .
+          git add shelters.json
+          git -c user.name="github-actions" -c user.email="actions@github.com" commit -qm "避難所の数 $(date -u +%F)"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" shelters
